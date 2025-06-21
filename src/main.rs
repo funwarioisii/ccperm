@@ -11,6 +11,12 @@ use walkdir::WalkDir;
 struct Args {
     #[arg(short, long)]
     ghq_root: Option<PathBuf>,
+    
+    #[arg(long)]
+    json: bool,
+    
+    #[arg(long)]
+    deny: bool,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -21,18 +27,22 @@ struct ClaudeSettings {
 #[derive(Debug, Deserialize, Serialize)]
 struct Permissions {
     allow: Option<Vec<String>>,
+    deny: Option<Vec<String>>,
 }
+
 
 #[derive(Debug)]
 struct ProjectInfo {
     permissions: Vec<String>,
+    deny_permissions: Vec<String>,
     error: Option<String>,
 }
 
 impl ProjectInfo {
-    fn new(permissions: Vec<String>) -> Self {
+    fn new(permissions: Vec<String>, deny_permissions: Vec<String>) -> Self {
         Self {
             permissions,
+            deny_permissions,
             error: None,
         }
     }
@@ -40,6 +50,7 @@ impl ProjectInfo {
     fn with_error(error: String) -> Self {
         Self {
             permissions: vec![],
+            deny_permissions: vec![],
             error: Some(error),
         }
     }
@@ -101,26 +112,59 @@ fn extract_permissions(settings_path: &Path, _ghq_root: &Path) -> ProjectInfo {
         }
     };
 
-    let permissions = settings
+    let allow_permissions = settings
         .permissions
-        .and_then(|p| p.allow)
+        .as_ref()
+        .and_then(|p| p.allow.as_ref())
+        .cloned()
+        .unwrap_or_default();
+    
+    let deny_permissions = settings
+        .permissions
+        .as_ref()
+        .and_then(|p| p.deny.as_ref())
+        .cloned()
         .unwrap_or_default();
 
-    ProjectInfo::new(permissions)
+    ProjectInfo::new(allow_permissions, deny_permissions)
 }
 
-fn display_results(projects: &[ProjectInfo]) {
+fn display_results(projects: &[ProjectInfo], json_output: bool, show_deny: bool) {
     let all_permissions: HashSet<String> = projects
         .iter()
         .filter(|p| p.error.is_none())
-        .flat_map(|p| p.permissions.iter())
+        .flat_map(|p| {
+            if show_deny {
+                p.deny_permissions.iter()
+            } else {
+                p.permissions.iter()
+            }
+        })
         .cloned()
         .collect();
 
     let mut sorted_permissions: Vec<_> = all_permissions.into_iter().collect();
     sorted_permissions.sort();
-    for permission in sorted_permissions {
-        println!("{}", permission);
+
+    if json_output {
+        let output = if show_deny {
+            serde_json::json!({
+                "permissions": {
+                    "deny": sorted_permissions
+                }
+            })
+        } else {
+            serde_json::json!({
+                "permissions": {
+                    "allow": sorted_permissions
+                }
+            })
+        };
+        println!("{}", serde_json::to_string_pretty(&output).unwrap());
+    } else {
+        for permission in sorted_permissions {
+            println!("{}", permission);
+        }
     }
 }
 
@@ -141,7 +185,7 @@ fn main() -> Result<()> {
         .map(|path| extract_permissions(path, &ghq_root))
         .collect();
 
-    display_results(&projects);
+    display_results(&projects, args.json, args.deny);
 
     Ok(())
 }
